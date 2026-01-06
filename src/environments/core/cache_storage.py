@@ -103,27 +103,42 @@ class CacheStorage:
         return list(self.items.values())
     
     def get_candidates(self, n: int, current_time: float) -> List[CacheItem]:
+        """
+        Get structured eviction candidates:
+        - First 10: LRU (least recently used)
+        - Next 10: LFU (least frequently used)
+        - Last 10: Random
+        
+        Total: 30 candidates per node
+        """
         items = list(self.items.values())
+        if not items:
+            return []
+        
         if len(items) <= n:
             return items
         
-        n_lru = max(1, int(n * 0.34))
-        n_lfu = max(1, int(n * 0.33))
-        n_random = n - n_lru - n_lfu
+        candidates = []
         
+        # LRU candidates (10): oldest access time
         lru_sorted = sorted(items, key=lambda x: x.last_access)
-        lru_candidates = lru_sorted[:n_lru]
+        candidates.extend(lru_sorted[:10])
         
-        remaining = [i for i in items if i not in lru_candidates]
-        lfu_sorted = sorted(remaining, key=lambda x: x.frequency)
-        lfu_candidates = lfu_sorted[:n_lfu]
+        # LFU candidates (10): lowest frequency
+        # Exclude items already selected as LRU to avoid duplicates
+        lfu_sorted = sorted(items, key=lambda x: x.frequency)
+        lfu_unique = [x for x in lfu_sorted if x not in candidates]
+        candidates.extend(lfu_unique[:10])
         
-        remaining = [i for i in items if i not in lru_candidates and i not in lfu_candidates]
-        random_candidates = random.sample(remaining, min(n_random, len(remaining)))
-        candidates = lru_candidates + lfu_candidates + random_candidates
+        # Random candidates (10): random sample from remaining items
+        remaining = [x for x in items if x not in candidates]
+        if remaining:
+            random_sample = random.sample(remaining, min(10, len(remaining)))
+            candidates.extend(random_sample)
         
-        while len(candidates) < n and len(lru_sorted) > len(candidates):
-            for item in lru_sorted:
+        # Pad with any remaining items if we don't have 30 yet
+        while len(candidates) < n and len(candidates) < len(items):
+            for item in items:
                 if item not in candidates:
                     candidates.append(item)
                     if len(candidates) >= n:
