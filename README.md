@@ -1,34 +1,25 @@
 # Caching with Deep Reinforcement Learning
 
-A simulation environment for evaluating cache replacement policies using real-world Wikipedia traces.
+## Project Overview
+This project explores the application of Deep Reinforcement Learning to optimize content caching in a hierarchical Content Delivery Network.
 
+Instead of trying to learn a eviction policy from scratch, the problem is split into two parts:
+1.  Eviction: Used a fixed, high-performance heuristic for this trace (LFU) to handle eviction when the cache is full.
+2.  Placement: Trained various Deep Reinforcement Learning Agents to make Placement Decisions depinding on content.
 
-## Baseline Results
+## Why LFU for Eviction?
+Conducted benchmarking of standard eviction policies on the specific Wikipedia trace. The results demonstrated that Least Frequently Used outperforms other strategies, confirming that frequency is the dominant signal for this Zipfian data.
 
-Wikipedia trace, 50k steps, 1MB edge + 2MB regional cache:
+### Benchmark Results (1 Million Steps)
+*Simulated on a Unified Cache (Edge + Regional capacity) to test pure eviction performance.*
 
 | Policy | Hit Rate | Byte Hit Rate | Time |
-|--------|----------|---------------|------|
-| **SIZE** | **66.55%** | 56.42% | 388.9s |
-| Random | 64.44% | 56.57% | 314.4s |
-| LFU | 47.93% | 45.96% | 312.3s |
-| Hyperbolic | 47.27% | 45.15% | 318.1s |
-| GDSF | 44.60% | 40.29% | 327.1s |
-| FIFO | 41.61% | 36.38% | 314.0s |
-| LRU | 41.54% | 39.08% | 317.3s |
+| :--- | :--- | :--- | :--- |
+| **LFU** | **52.18%** | **51.10%** | 102.0s | 
+| LRU | 40.30% | 39.15% | 92.5s | 
+| FIFO | 34.91% | 33.81% | 95.4s | 
+| Random | 34.89% | 33.79% | 47.7s | 
 
-**SIZE** (evict largest item) wins for this trace, followed closely by Random.
-
-## Implemented Policies
-
-- **LRU** - Least Recently Used
-- **LFU** - Least Frequently Used  
-- **FIFO** - First In First Out
-- **SIZE** - Evict largest item first
-- **GDSF** - Greedy Dual Size Frequency
-- **Hyperbolic** - Hyperbolic caching (frequency × recency / size)
-- **Random** - Random eviction
 
 ## Data
-
-Uses the Wikipedia CDN trace from UMass Trace Repository.
+Uses the Wikipedia traces from *Wikipedia Workload Analysis for Decentralized Hosting* by Guido Urdaneta, Guillaume Pierre, Maarten van Steen.
