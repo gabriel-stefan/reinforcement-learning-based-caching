@@ -20,6 +20,15 @@ Conducted benchmarking of standard eviction policies on the specific Wikipedia t
 | FIFO | 34.91% | 33.81% | 95.4s | 
 | Random | 34.89% | 33.79% | 47.7s | 
 
+### Placement Baselines (1 Million Steps)
+Policies decide where to cache.
+
+| Policy | Hit Rate | Reward (Latency) | Time | 
+| :--- | :--- | :--- | :--- | 
+| **SizeSplit (Median)** | **52.06%** | **4,472,646** | 64.5s |
+| PercentileSplit (P90) | 46.62% | 4,275,183 | 65.7s | 
+| EdgeFirst | 43.10% | 4,017,288 | 63.4s | 
+| Probabilistic (10%) | 42.67% | 3,721,054 | 43.1s | 
 
 ## Data
 Uses the Wikipedia traces from *Wikipedia Workload Analysis for Decentralized Hosting* by Guido Urdaneta, Guillaume Pierre, Maarten van Steen.
