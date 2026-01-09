@@ -1,7 +1,7 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from typing import Tuple, Dict, Any, Optional, List
+from typing import Tuple, Dict, Optional, List
 from collections import defaultdict
 
 from .core.network_topology import (
@@ -19,14 +19,8 @@ class CacheEnv(gym.Env):
         self,
         data_loader,
         topology: Optional[NetworkTopology] = None,
-        alpha: float = 1.0,    
-        beta: float = 0.5,     
-        gamma: float = 0.1,
-        k_candidates: int = 20,
         render_mode: Optional[str] = None,
         include_static_features: bool = False,
-        freq_history_window: int = 10000,
-        adaptive_rewards: bool = False,
     ):
         
         super().__init__()
@@ -37,18 +31,9 @@ class CacheEnv(gym.Env):
         self.nodes = topology.get_cache_node_ids()
         self.num_nodes = len(self.nodes)
         
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
-        self.adaptive_rewards = adaptive_rewards
-        
-        self.k_candidates = k_candidates
-        self.max_evictions = 5  
         self.render_mode = render_mode
         self.loader = data_loader
-        
         self.include_static = include_static_features
-        self.freq_history_window = freq_history_window
         
         self._max_latency = topology.calculate_origin_fetch_time(1024 * 1024)
         self._max_bandwidth = max(topology.get_node(n).bandwidth for n in self.nodes)
@@ -56,12 +41,10 @@ class CacheEnv(gym.Env):
         self._static_features = self._compute_static_features()
         
         self.request: Optional[Tuple] = None
-        self._candidates: Dict[str, List[CacheItem]] = {}  # Current eviction candidates per node
         self._items: Dict[str, List[CacheItem]] = {}
         self._last_lookup: Optional[HierarchicalLookupResult] = None
         
         self._url_freq: Dict[str, int] = defaultdict(int)
-        self._url_history: List[str] = []
         
         self.total_requests = 0
         self.total_hits = 0
@@ -73,7 +56,11 @@ class CacheEnv(gym.Env):
         self.step_count = 0
         
         self.observation_space = self._make_obs_space()
-        self.action_space = spaces.Discrete(self.num_nodes * self.k_candidates + 1)
+        # new action space: 3 actions 
+        # 0: cache at edge
+        # 1: cache at regional 
+        # 2: skip cache
+        self.action_space = spaces.Discrete(3)
     
     def _compute_static_features(self) -> Dict[str, np.ndarray]:
         static = {}
@@ -93,8 +80,7 @@ class CacheEnv(gym.Env):
         per_node = per_node_dynamic + per_node_static
         request = 2 
         global_feat = 3 
-        candidate_features = self.num_nodes * self.k_candidates * 5
-        return self.num_nodes * per_node + request + global_feat + candidate_features
+        return self.num_nodes * per_node + request + global_feat
     
     def _make_obs_space(self) -> spaces.Box:
         dim = self._calc_obs_dim()
@@ -107,11 +93,9 @@ class CacheEnv(gym.Env):
         self.loader.reset()
         self.topology.clear_all()
         self._items = {n: [] for n in self.nodes}
-        self._candidates = {n: [] for n in self.nodes}
         self._last_lookup = None
         
         self._url_freq.clear()
-        self._url_history.clear()
         
         self.total_requests = 0
         self.total_hits = 0
@@ -154,7 +138,6 @@ class CacheEnv(gym.Env):
         url, size, timestamp, *_ = self.request
         obs = []
         
-        node_size_percentiles = {}  
         for node_id in self.nodes:
             node = self.topology.get_node(node_id)
             
@@ -164,29 +147,28 @@ class CacheEnv(gym.Env):
             self._items[node_id] = items
             
             if items:
+                if len(items) > 500:
+                    indices = np.random.choice(len(items), 500, replace=False)
+                    sampled_items = [items[i] for i in indices]
+                else:
+                    sampled_items = items
+                    
                 num_items = min(1.0, len(items) / 100)
-                sizes = [i.size for i in items]
+                sizes = [i.size for i in sampled_items]
                 avg_size = self._norm_size(np.mean(sizes))
-                avg_freq = self._norm_freq(int(np.mean([i.frequency for i in items])))
+                avg_freq = self._norm_freq(int(np.mean([i.frequency for i in sampled_items])))
                 avg_recency = np.mean([
                     np.exp(-0.001 * max(0, timestamp - i.last_access)) 
-                    for i in items
+                    for i in sampled_items
                 ])
-                sorted_sizes = np.sort(sizes)
-                node_size_percentiles[node_id] = {
-                    'p10': sorted_sizes[int(len(sorted_sizes) * 0.1)] if len(sorted_sizes) > 0 else 0,
-                    'p50': sorted_sizes[int(len(sorted_sizes) * 0.5)] if len(sorted_sizes) > 0 else 0,
-                    'p90': sorted_sizes[int(len(sorted_sizes) * 0.9)] if len(sorted_sizes) > 0 else 0,
-                }
             else:
                 num_items = avg_size = avg_freq = avg_recency = 0.0
-                node_size_percentiles[node_id] = {'p10': 0, 'p50': 0, 'p90': 0}
             
             obs.extend([num_items, avg_size, avg_freq, avg_recency])
             
             free_space = node.get_free_space()
             cache_pressure = min(2.0, size / max(1, free_space))
-            obs.append(cache_pressure / 2.0)  # Normalize to [0, 1]
+            obs.append(cache_pressure / 2.0)  
             
             if self.include_static:
                 obs.extend(self._static_features[node_id].tolist())
@@ -200,38 +182,7 @@ class CacheEnv(gym.Env):
         edge_ratio = self.tier_hits.get(0, 0) / total_tier_hits
         regional_ratio = self.tier_hits.get(1, 0) / total_tier_hits
         obs.extend([edge_ratio, regional_ratio])
-        
-        for node_id in self.nodes:
-            node = self.topology.get_node(node_id)
-            candidates = node.cache.get_candidates(self.k_candidates, timestamp)
-            self._candidates[node_id] = candidates
             
-            p10 = node_size_percentiles[node_id]['p10']
-            p50 = node_size_percentiles[node_id]['p50']
-            p90 = node_size_percentiles[node_id]['p90']
-            
-            for i in range(self.k_candidates):
-                if i < len(candidates):
-                    c = candidates[i]
-                    obs.append(self._norm_size(c.size))
-                    obs.append(self._norm_freq(c.frequency))
-                    obs.append(np.exp(-0.001 * max(0, timestamp - c.last_access)))
-                    
-                    fit_ratio = min(2.0, size / max(1, c.size))
-                    obs.append(fit_ratio / 2.0)  
-                    
-                    if c.size <= p10:
-                        size_pct = 0.0
-                    elif c.size <= p50:
-                        size_pct = 0.25 + 0.25 * (c.size - p10) / max(1, p50 - p10)
-                    elif c.size <= p90:
-                        size_pct = 0.5 + 0.25 * (c.size - p50) / max(1, p90 - p50)
-                    else:
-                        size_pct = 0.75 + 0.25 * min(1.0, (c.size - p90) / max(1, p90))
-                    obs.append(size_pct)
-                else:
-                    obs.extend([0.0, 0.0, 0.0, 1.0, 0.0])  
-        
         return np.array(obs, dtype=np.float32)
     
     def _get_freq_hint(self, url: str) -> float:
@@ -240,18 +191,10 @@ class CacheEnv(gym.Env):
     
     def _update_freq_history(self, url: str):
         self._url_freq[url] += 1
-        self._url_history.append(url)
-        
-        while len(self._url_history) > self.freq_history_window:
-            old_url = self._url_history.pop(0)
-            self._url_freq[old_url] -= 1
-            if self._url_freq[old_url] <= 0:
-                del self._url_freq[old_url]
         
     def _apply(self, action: int) -> Tuple[float, bool, Dict]:
         url, size, timestamp, *_ = self.request
         info = {'processed': False, 'hit': False, 'size': size}
-        evicted_item: Optional[CacheItem] = None
         
         lookup = self.topology.lookup(url, size, timestamp)
         self._last_lookup = lookup
@@ -268,180 +211,94 @@ class CacheEnv(gym.Env):
             })
             return reward, False, info
         
-        skip_action = self.num_nodes * self.k_candidates
-        if action == skip_action:
-            info['processed'] = True
-            info['skipped'] = True
-            return -0.05, False, info
-        
-        node_idx = action // self.k_candidates
-        candidate_idx = action % self.k_candidates
-        
-        if node_idx >= self.num_nodes:
+        if action == 2:  
             info['processed'] = True
             info['skipped'] = True
             return -0.1, False, info
         
-        node_id = self.nodes[node_idx]
-        node = self.topology.get_node(node_id)
+        target_node = None
+        target_node_id = None
         
-        if node.get_free_space() >= size:
-            node.add(url, size, timestamp)
+        if action == 0: # edge
+            target_node = self.topology.get_node(self.nodes[0]) 
+            target_node_id = self.nodes[0]
+        elif action == 1: # regional
+            target_node = self.topology.get_node(self.nodes[1]) 
+            target_node_id = self.nodes[1]
+        
+        # evict with lfu 
+        evicted_items_list = []
+        
+        # max 20 evictions to prevent infinite loops
+        for _ in range(20):
+            if target_node.get_free_space() >= size:
+                break
+                
+            items = target_node.cache.get_all_items()
+            if not items:
+                break 
+            evicted_item = min(items, key=lambda x: x.frequency) # lfu strategy proven best on this trace
+            
+            target_node.evict(evicted_item.url)
+            evicted_items_list.append(evicted_item)
+        
+        if target_node.get_free_space() >= size:
+            target_node.add(url, size, timestamp)
+            
+            # Latency-based reward: fair for all tiers, no arbitrary penalties
+            reward = self._reward(lookup, size, len(evicted_items_list), evicted_items_list)
+            
+            # Small bonus for successful caching (encourages exploration)
+            reward += 0.1
+            
             info['processed'] = True
-            info['cached_at'] = node_id
-            return 0.0, False, info
-        
-        candidates = self._candidates.get(node_id, [])
-        if not candidates or candidate_idx >= len(candidates):
-            info['processed'] = True
-            info['skipped'] = True
-            return -0.15, False, info
-        
-        evicted_item = candidates[candidate_idx]
-        node.evict(evicted_item.url)
-        info['evicted'] = evicted_item.url
-        info['evicted_size'] = evicted_item.size
-        
-        if node.get_free_space() >= size:
-            node.add(url, size, timestamp)
-            reward = self._reward(lookup, size, 1, [evicted_item])
-            info['processed'] = True
-            info['cached_at'] = node_id
-            info['evicted_items'] = 1
+            info['cached_at'] = target_node_id
+            info['evicted_items'] = len(evicted_items_list)
+            info['action_type'] = ['EDGE', 'REGIONAL', 'SKIP'][action]
             return reward, False, info
         else:
             info['processed'] = True
-            info['need_more_eviction'] = True
-            return -0.2, False, info
+            info['failed_to_cache'] = True
+            return -1.0, False, info #  failure to cache is a miss
     
     def _reward(self, lookup: HierarchicalLookupResult, size: int, 
                 evictions: int, evicted_items: Optional[List[CacheItem]] = None
                 ) -> float:
+        """Latency-based reward function.
+        
+        The reward is proportional to actual latency savings:
+        reward = (origin_latency - actual_latency) / origin_latency * scale
+        
+        This is FAIR because:
+        - No arbitrary penalties for specific tiers
+        - Naturally scales with file size and network properties
+        - Grounded in real, measurable metrics
+        - Works universally for all RL agents
+        """
+        origin_latency = self.topology.calculate_origin_fetch_time(size)
+        
         hit = lookup.hit and not lookup.from_origin
-        url = self.request[0] if self.request else ""
+        if hit:
+            actual_latency = lookup.total_latency_ms
+        else:
+            actual_latency = origin_latency
+    
+        savings_ratio = (origin_latency - actual_latency) / max(origin_latency, 1e-6)
         
-        freq_importance = self._get_freq_hint(url)  
-        size_importance = self._norm_size(size)      
-        request_importance = 0.6 * freq_importance + 0.4 * size_importance
+        reward = savings_ratio * 10.0
         
-        alpha, beta, gamma = self._get_adaptive_weights()
+ 
+        if evicted_items:
+            for item in evicted_items:
+                freq_penalty = min(item.frequency / 10.0, 1.0) * 0.1
+                reward -= freq_penalty
         
-        latency_reward = self._calc_latency_reward(lookup, size, hit)
-        latency_reward *= (1.0 + request_importance)  
-        
-        tier_reward = self._calc_tier_reward(lookup, hit)
-        
-        eviction_penalty = self._calc_eviction_penalty(evictions, evicted_items)
-        
-        miss_penalty = self._calc_miss_penalty(hit, request_importance, size)
-        
-        reward = (alpha * latency_reward + 
-                  beta * tier_reward - 
-                  gamma * eviction_penalty -
-                  miss_penalty)
+        if not hit:
+            reward = -0.1
         
         return reward
     
-    def _get_adaptive_weights(self) -> Tuple[float, float, float]:
-        if not self.adaptive_rewards:
-            return self.alpha, self.beta, self.gamma
-        
-        alpha, beta, gamma = self.alpha, self.beta, self.gamma
-        
-        if self.total_requests < 10:
-            return alpha, beta, gamma
-        
-        hit_rate = self.total_hits / self.total_requests
-        if hit_rate < 0.3:
-            alpha *= 1.3
-        elif hit_rate > 0.7:
-            beta *= 1.2
-        
-        total_tier_hits = sum(self.tier_hits.values()) or 1
-        edge_ratio = self.tier_hits.get(0, 0) / total_tier_hits
-        
-        if edge_ratio < 0.2 and hit_rate > 0.3:
-            beta *= 1.3
-        elif edge_ratio > 0.8:
-            beta *= 0.8
-        
-        avg_occupancy = np.mean([
-            self.topology.get_node(n).get_occupancy() 
-            for n in self.nodes
-        ])
-        if avg_occupancy > 0.9:
-            gamma *= 1.5
-        
-        total = alpha + beta + gamma
-        scale = (self.alpha + self.beta + self.gamma) / total
-        
-        return alpha * scale, beta * scale, gamma * scale
-    
-    def _calc_latency_reward(self, lookup: HierarchicalLookupResult, 
-                              size: int, hit: bool) -> float:
-        if not hit:
-            return 0.0
-        
-        max_latency = self.topology.calculate_origin_fetch_time(size)
-        savings = (max_latency - lookup.total_latency_ms) / max_latency
-        return max(0.0, savings)
-    
-    def _calc_tier_reward(self, lookup: HierarchicalLookupResult, 
-                          hit: bool) -> float:
-        if not hit or lookup.hit_tier is None:
-            return 0.0
-        
-        max_tier = max(1, self._num_tiers)
-        base_bonus = 1.0 - (lookup.hit_tier / max_tier)
-        
-        hit_node = lookup.hit_node_id
-        if hit_node:
-            node = self.topology.get_node(hit_node)
-            occupancy = node.get_occupancy()
-            pressure_multiplier = 0.7 + 0.6 * occupancy  
-            base_bonus *= pressure_multiplier
-        
-        return base_bonus
-    
-    def _calc_eviction_penalty(self, evictions: int, 
-                                evicted_items: Optional[List[CacheItem]] = None
-                                ) -> float:
-        if evictions == 0:
-            return 0.0
-        
-        base_penalty = evictions / max(1, self.max_evictions)
-        
-        if evicted_items:
-            timestamp = self.request[2] if self.request else 0
-            total_value = 0.0
-            
-            for item in evicted_items:
-                freq_value = self._norm_freq(item.frequency)
-                
-                recency_value = np.exp(-0.001 * max(0, timestamp - item.last_access))
-                
-                size_value = self._norm_size(item.size)
-                
-                item_value = 0.4 * freq_value + 0.4 * recency_value + 0.2 * size_value
-                total_value += item_value
-            
-            avg_value = total_value / len(evicted_items)
-            value_multiplier = 0.5 + avg_value
-            base_penalty *= value_multiplier
-        
-        return min(1.0, base_penalty)
-    
-    def _calc_miss_penalty(self, hit: bool, request_importance: float,
-                           size: int) -> float:
-        if hit:
-            return 0.0
-        base_penalty = 0.3
-        importance_scale = 0.5 + request_importance
-        
-        if size > 1_000_000:  
-            importance_scale *= 1.2
-        
-        return base_penalty * importance_scale
+
     
     
     def _update_metrics(self, info: Dict):

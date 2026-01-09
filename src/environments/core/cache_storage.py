@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional
-import random
 
 
 @dataclass
@@ -101,50 +100,6 @@ class CacheStorage:
     
     def get_all_items(self) -> List[CacheItem]:
         return list(self.items.values())
-    
-    def get_candidates(self, n: int, current_time: float) -> List[CacheItem]:
-        """
-        Get structured eviction candidates:
-        - First 10: LRU (least recently used)
-        - Next 10: LFU (least frequently used)
-        - Last 10: Random
-        
-        Total: 30 candidates per node
-        """
-        items = list(self.items.values())
-        if not items:
-            return []
-        
-        if len(items) <= n:
-            return items
-        
-        candidates = []
-        
-        # LRU candidates (10): oldest access time
-        lru_sorted = sorted(items, key=lambda x: x.last_access)
-        candidates.extend(lru_sorted[:10])
-        
-        # LFU candidates (10): lowest frequency
-        # Exclude items already selected as LRU to avoid duplicates
-        lfu_sorted = sorted(items, key=lambda x: x.frequency)
-        lfu_unique = [x for x in lfu_sorted if x not in candidates]
-        candidates.extend(lfu_unique[:10])
-        
-        # Random candidates (10): random sample from remaining items
-        remaining = [x for x in items if x not in candidates]
-        if remaining:
-            random_sample = random.sample(remaining, min(10, len(remaining)))
-            candidates.extend(random_sample)
-        
-        # Pad with any remaining items if we don't have 30 yet
-        while len(candidates) < n and len(candidates) < len(items):
-            for item in items:
-                if item not in candidates:
-                    candidates.append(item)
-                    if len(candidates) >= n:
-                        break
-        
-        return candidates[:n]
     
     def __len__(self) -> int:
         return len(self.items)
