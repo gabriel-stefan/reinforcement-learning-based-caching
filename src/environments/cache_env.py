@@ -54,6 +54,8 @@ class CacheEnv(gym.Env):
         self.node_hits: Dict[str, int] = {}
         self.episode_reward = 0.0
         self.step_count = 0
+        self._total_latency = 0.0
+        self._origin_bytes = 0
         
         self.observation_space = self._make_obs_space()
         # new action space: 3 actions 
@@ -105,6 +107,8 @@ class CacheEnv(gym.Env):
         self.node_hits = {n: 0 for n in self.nodes}
         self.episode_reward = 0.0
         self.step_count = 0
+        self._total_latency = 0.0
+        self._origin_bytes = 0
         
         self._next_request()
         
@@ -199,6 +203,10 @@ class CacheEnv(gym.Env):
         lookup = self.topology.lookup(url, size, timestamp)
         self._last_lookup = lookup
         info['latency'] = lookup.total_latency_ms
+        self._total_latency += lookup.total_latency_ms
+        
+        if lookup.from_origin:
+            self._origin_bytes += size
         
         if lookup.hit and not lookup.from_origin:
             reward = self._reward(lookup, size, 0, [])
@@ -214,16 +222,16 @@ class CacheEnv(gym.Env):
         if action == 2:  
             info['processed'] = True
             info['skipped'] = True
-            return -0.1, False, info
+            return -1.0, False, info  
         
         target_node = None
         target_node_id = None
         
-        if action == 0: # edge
-            target_node = self.topology.get_node(self.nodes[0]) 
+        if action == 0:  # Cache at edge (tier 0)
+            target_node = self.topology.get_node(self.nodes[0])
             target_node_id = self.nodes[0]
-        elif action == 1: # regional
-            target_node = self.topology.get_node(self.nodes[1]) 
+        elif action == 1:  # Cache at regional (tier 1)
+            target_node = self.topology.get_node(self.nodes[1])
             target_node_id = self.nodes[1]
         
         # evict with lfu 
@@ -245,10 +253,10 @@ class CacheEnv(gym.Env):
         if target_node.get_free_space() >= size:
             target_node.add(url, size, timestamp)
             
-            # Latency-based reward: fair for all tiers, no arbitrary penalties
+            # latency-based rewards
             reward = self._reward(lookup, size, len(evicted_items_list), evicted_items_list)
             
-            # Small bonus for successful caching (encourages exploration)
+            # small bonus for successful caching to encourage exploration
             reward += 0.1
             
             info['processed'] = True
@@ -264,17 +272,9 @@ class CacheEnv(gym.Env):
     def _reward(self, lookup: HierarchicalLookupResult, size: int, 
                 evictions: int, evicted_items: Optional[List[CacheItem]] = None
                 ) -> float:
-        """Latency-based reward function.
+
+        # reward formula = (origin_latency - actual_latency) / origin_latency * scale
         
-        The reward is proportional to actual latency savings:
-        reward = (origin_latency - actual_latency) / origin_latency * scale
-        
-        This is FAIR because:
-        - No arbitrary penalties for specific tiers
-        - Naturally scales with file size and network properties
-        - Grounded in real, measurable metrics
-        - Works universally for all RL agents
-        """
         origin_latency = self.topology.calculate_origin_fetch_time(size)
         
         hit = lookup.hit and not lookup.from_origin
@@ -294,7 +294,7 @@ class CacheEnv(gym.Env):
                 reward -= freq_penalty
         
         if not hit:
-            reward = -0.1
+            reward = 0.0 
         
         return reward
     
@@ -331,7 +331,9 @@ class CacheEnv(gym.Env):
             'requests': self.total_requests,
             'hits': self.total_hits,
             'reward': self.episode_reward,
-            'steps': self.step_count
+            'steps': self.step_count,
+            'avg_latency': self._total_latency / max(1, self.total_requests),
+            'origin_bandwidth': self._origin_bytes / max(1, self.step_count)  # bytes per step
         }
         
         total_tier_hits = sum(self.tier_hits.values()) or 1
