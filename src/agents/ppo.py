@@ -14,6 +14,7 @@ class PlacementPPO:
                  gae_lambda: float = 0.95,
                  clip_range: float = 0.2,
                  ent_coef: float = 0.01,
+                 policy_kwargs: Optional[Dict[str, Any]] = None,
                  verbose: int = 1):
         
         self.env = env
@@ -33,6 +34,8 @@ class PlacementPPO:
             gae_lambda=gae_lambda,
             clip_range=clip_range,
             ent_coef=ent_coef,
+
+            policy_kwargs=policy_kwargs,
             verbose=verbose,
             tensorboard_log="./tensorboard_logs/"
         )

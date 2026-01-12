@@ -4,6 +4,10 @@ import sys
 import os
 import numpy as np
 
+# Force unbuffered output
+sys.stdout.reconfigure(line_buffering=True)
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from src.environments.cache_env import CacheEnv
@@ -19,7 +23,7 @@ def evaluate_policy(env, policy, name, steps=1000):
     
     start_time = time.time()
     
-    for _ in range(steps):
+    for step_idx in range(steps):
         if policy:
             action, _ = policy.predict(obs, deterministic=True)
         else:
@@ -34,6 +38,10 @@ def evaluate_policy(env, policy, name, steps=1000):
             
         if done:
             obs, _ = env.reset()
+            
+        if step_idx % 10000 == 0:
+            curr_metrics = env.get_metrics()
+            print(f"Step {step_idx}: Hit Rate={curr_metrics['hit_rate']*100:.2f}%", flush=True)
             
     duration = time.time() - start_time
     metrics = env.get_metrics()

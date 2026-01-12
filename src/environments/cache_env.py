@@ -21,6 +21,7 @@ class CacheEnv(gym.Env):
         topology: Optional[NetworkTopology] = None,
         render_mode: Optional[str] = None,
         include_static_features: bool = False,
+        regional_reward_bonus: float = 0.0,
     ):
         
         super().__init__()
@@ -287,7 +288,6 @@ class CacheEnv(gym.Env):
         
         reward = savings_ratio * 10.0
         
- 
         if evicted_items:
             for item in evicted_items:
                 freq_penalty = min(item.frequency / 10.0, 1.0) * 0.1
@@ -297,9 +297,6 @@ class CacheEnv(gym.Env):
             reward = 0.0 
         
         return reward
-    
-
-    
     
     def _update_metrics(self, info: Dict):
         self.total_requests += 1

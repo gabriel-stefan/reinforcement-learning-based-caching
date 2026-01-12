@@ -1,22 +1,22 @@
 from .baselines import (
-    BaselinePolicy,
+    EvictionPolicy,
     RandomPolicy,
     LRUPolicy,
     LFUPolicy,
     FIFOPolicy,
-    LargestFirstPolicy,
+    SizePolicy,
     POLICIES,
     get_policy
 )
 
 
 __all__ = [
-    'BaselinePolicy',
+    'EvictionPolicy',
     'RandomPolicy',
     'LRUPolicy',
     'LFUPolicy',
     'FIFOPolicy',
-    'LargestFirstPolicy',
+    'SizePolicy',
     'POLICIES',
     'get_policy',
 ]
