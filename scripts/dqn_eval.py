@@ -4,13 +4,15 @@ import time
 import argparse
 import numpy as np
 
+sys.stdout.reconfigure(line_buffering=True)
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_loader import DataLoader
 from src.environments import CacheEnv
 from src.environments.core.network_topology import create_simple_hierarchy
 from src.agents.dqn import PlacementDQN
-from src.agents.cdn_baselines import EdgeFirstLFU, SizeSplitLFU
 
 def evaluate_policy(env, policy, name, steps=10000):
     print(f"\nEvaluating {name} for {steps} steps...")
@@ -35,12 +37,15 @@ def evaluate_policy(env, policy, name, steps=10000):
             latencies.append(info['latency'])
             
         if done:
-            break
+            obs, _ = env.reset()
+            
+        if i % 10000 == 0:
+            curr_metrics = env.get_metrics()
+            print(f"Step {i}: Hit Rate={curr_metrics['hit_rate']*100:.2f}%", flush=True)
             
     duration = time.time() - start_time
     metrics = env.get_metrics()
     
-    # action distribution
     unique, counts = np.unique(actions, return_counts=True)
     action_dist = dict(zip(unique, counts))
     

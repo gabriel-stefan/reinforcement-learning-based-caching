@@ -13,7 +13,9 @@ class PlacementDQN:
                  batch_size: int = 32,
                  gamma: float = 0.99,
                  exploration_fraction: float = 0.1,
+
                  exploration_final_eps: float = 0.05,
+                 policy_kwargs: Optional[Dict[str, Any]] = None,
                  verbose: int = 1):
         
         self.env = env
@@ -34,6 +36,8 @@ class PlacementDQN:
             target_update_interval=1000,
             exploration_fraction=exploration_fraction,
             exploration_final_eps=exploration_final_eps,
+
+            policy_kwargs=policy_kwargs,
             verbose=verbose,
             tensorboard_log="./tensorboard_logs/"
         )
