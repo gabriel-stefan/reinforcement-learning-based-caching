@@ -4,13 +4,15 @@ channels:
   - conda-forge
 dependencies:
   - python=3.10
+  - pytorch
   - numpy
   - pandas
   - matplotlib
   - scikit-learn
   - jupyter
+  - tqdm
   - pip
   - pip:
     - gymnasium
     - stable-baselines3
-    - torch
+    - tensorboard
